@@ -308,6 +308,8 @@ struct iperf_test
     int       no_delay;                         /* -N option */
     int       reverse;                          /* -R option */
     int       bidirectional;                    /* --bidirectional */
+    int       gso_size;                         /* -S option */
+    int       gro;                              /* -g flag */
     int	      verbose;                          /* -V option - verbose mode */
     int	      json_output;                      /* -J option - JSON output */
     int	      zerocopy;                         /* -Z option - use sendfile */

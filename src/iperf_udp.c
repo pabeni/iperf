@@ -34,6 +34,7 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <netinet/in.h>
+#include <netinet/udp.h>
 #ifdef HAVE_STDINT_H
 #include <stdint.h>
 #endif
@@ -61,6 +62,14 @@
 # endif
 #endif
 
+#ifndef UDP_SEGMENT
+#define UDP_SEGMENT		103
+#endif
+
+#ifndef UDP_GRO
+#define UDP_GRO			104
+#endif
+
 /* iperf_udp_recv
  *
  * receives the data for UDP
@@ -75,8 +84,46 @@ iperf_udp_recv(struct iperf_stream *sp)
     int       first_packet = 0;
     double    transit = 0, d = 0;
     struct iperf_time sent_time, arrival_time, temp_time;
+    int       offset = 0;
+    int gso_size = 0;
 
-    r = Nread(sp->socket, sp->buffer, size, Pudp);
+    if (sp->test->gro) {
+        char control[CMSG_SPACE(sizeof(uint16_t))] = {0};
+        struct msghdr msg = {0};
+        struct iovec iov = {0};
+        struct cmsghdr *cmsg;
+        uint16_t *gsosizeptr;
+
+        iov.iov_base = sp->buffer;
+        iov.iov_len = size;
+
+        msg.msg_iov = &iov;
+        msg.msg_iovlen = 1;
+
+        msg.msg_control = control;
+        msg.msg_controllen = sizeof(control);
+        r = recvmsg(sp->socket, &msg, MSG_TRUNC | MSG_DONTWAIT);
+        if (r < 0) {
+            if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)
+                return 0;
+            else
+                return NET_HARDERROR;
+        } else {
+            for (cmsg = CMSG_FIRSTHDR(&msg); cmsg != NULL;
+                     cmsg = CMSG_NXTHDR(&msg, cmsg)) {
+                        if (cmsg->cmsg_level == SOL_UDP
+                            && cmsg->cmsg_type == UDP_GRO) {
+                                gsosizeptr = (uint16_t *) CMSG_DATA(cmsg);
+                                gso_size = *gsosizeptr;
+                                break;
+                        }
+            }
+            if (!gso_size)
+                return NET_HARDERROR;
+        }
+
+    } else
+        r = Nread(sp->socket, sp->buffer, size, Pudp);
 
     /*
      * If we got an error in the read, or if we didn't read anything
@@ -100,11 +147,13 @@ iperf_udp_recv(struct iperf_stream *sp)
 	sp->result->bytes_received += r;
 	sp->result->bytes_received_this_interval += r;
 
+	while (offset < r) {
+
 	/* Dig the various counters out of the incoming UDP packet */
 	if (sp->test->udp_counters_64bit) {
-	    memcpy(&sec, sp->buffer, sizeof(sec));
-	    memcpy(&usec, sp->buffer+4, sizeof(usec));
-	    memcpy(&pcount, sp->buffer+8, sizeof(pcount));
+	    memcpy(&sec, sp->buffer + offset, sizeof(sec));
+	    memcpy(&usec, sp->buffer + offset + 4, sizeof(usec));
+	    memcpy(&pcount, sp->buffer + offset + 8, sizeof(pcount));
 	    sec = ntohl(sec);
 	    usec = ntohl(usec);
 	    pcount = be64toh(pcount);
@@ -113,9 +162,9 @@ iperf_udp_recv(struct iperf_stream *sp)
 	}
 	else {
 	    uint32_t pc;
-	    memcpy(&sec, sp->buffer, sizeof(sec));
-	    memcpy(&usec, sp->buffer+4, sizeof(usec));
-	    memcpy(&pc, sp->buffer+8, sizeof(pc));
+	    memcpy(&sec, sp->buffer + offset, sizeof(sec));
+	    memcpy(&usec, sp->buffer + offset + 4, sizeof(usec));
+	    memcpy(&pc, sp->buffer + offset + 8, sizeof(pc));
 	    sec = ntohl(sec);
 	    usec = ntohl(usec);
 	    pcount = ntohl(pc);
@@ -195,6 +244,12 @@ iperf_udp_recv(struct iperf_stream *sp)
 	    d = -d;
 	sp->prev_transit = transit;
 	sp->jitter += (d - sp->jitter) / 16.0;
+
+	if (sp->test->gro) {
+		offset += gso_size;
+	} else
+		offset += r;
+        }
     }
     else {
 	if (sp->test->debug)
@@ -215,6 +270,9 @@ iperf_udp_send(struct iperf_stream *sp)
     int r;
     int       size = sp->settings->blksize;
     struct iperf_time before;
+    int offset = 0;
+
+    while (offset < size) {
 
     iperf_time_now(&before);
 
@@ -229,9 +287,9 @@ iperf_udp_send(struct iperf_stream *sp)
 	usec = htonl(before.usecs);
 	pcount = htobe64(sp->packet_count);
 
-	memcpy(sp->buffer, &sec, sizeof(sec));
-	memcpy(sp->buffer+4, &usec, sizeof(usec));
-	memcpy(sp->buffer+8, &pcount, sizeof(pcount));
+	memcpy(sp->buffer + offset, &sec, sizeof(sec));
+	memcpy(sp->buffer + offset + 4, &usec, sizeof(usec));
+	memcpy(sp->buffer + offset + 8, &pcount, sizeof(pcount));
 
     }
     else {
@@ -242,10 +300,16 @@ iperf_udp_send(struct iperf_stream *sp)
 	usec = htonl(before.usecs);
 	pcount = htonl(sp->packet_count);
 
-	memcpy(sp->buffer, &sec, sizeof(sec));
-	memcpy(sp->buffer+4, &usec, sizeof(usec));
-	memcpy(sp->buffer+8, &pcount, sizeof(pcount));
+	memcpy(sp->buffer + offset, &sec, sizeof(sec));
+	memcpy(sp->buffer + offset + 4, &usec, sizeof(usec));
+	memcpy(sp->buffer + offset + 8, &pcount, sizeof(pcount));
 
+    }
+
+    if (sp->test->gso_size)
+        offset += sp->test->gso_size;
+    else
+        offset += size;
     }
 
     r = Nwrite(sp->socket, sp->buffer, size, Pudp);
@@ -439,6 +503,11 @@ iperf_udp_accept(struct iperf_test *test)
 	}
     }
 
+    if (test->gro) {
+        int val = 1;
+        setsockopt(s, IPPROTO_UDP, UDP_GRO, &val, sizeof(val));
+    }
+
     /*
      * Create a new "listening" socket to replace the one we were using before.
      */
@@ -561,6 +630,11 @@ iperf_udp_connect(struct iperf_test *test)
     tv.tv_usec = 0;
     setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, (struct timeval *)&tv, sizeof(struct timeval));
 #endif
+
+    if (test->gso_size) {
+        int val = test->gso_size;
+        setsockopt(s, SOL_UDP, UDP_SEGMENT, &val, sizeof(val));
+    }
 
     /*
      * Write a datagram to the UDP stream to let the server know we're here.

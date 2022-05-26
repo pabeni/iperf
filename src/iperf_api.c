@@ -1077,7 +1077,9 @@ iperf_parse_arguments(struct iperf_test *test, int argc, char **argv)
 	{"connect-timeout", required_argument, NULL, OPT_CONNECT_TIMEOUT},
         {"idle-timeout", required_argument, NULL, OPT_IDLE_TIMEOUT},
         {"rcv-timeout", required_argument, NULL, OPT_RCV_TIMEOUT},
+        {"udp-gro", no_argument, NULL, 'g'},
         {"snd-timeout", required_argument, NULL, OPT_SND_TIMEOUT},
+        {"udp-segment", required_argument, NULL, 'e'},
         {"debug", no_argument, NULL, 'd'},
         {"help", no_argument, NULL, 'h'},
         {NULL, 0, NULL, 0}
@@ -1102,7 +1104,7 @@ iperf_parse_arguments(struct iperf_test *test, int argc, char **argv)
     char *client_username = NULL, *client_rsa_public_key = NULL, *server_rsa_private_key = NULL;
 #endif /* HAVE_SSL */
 
-    while ((flag = getopt_long(argc, argv, "p:f:i:D1VJvsc:ub:t:n:k:l:P:Rw:B:M:N46S:L:ZO:F:A:T:C:dI:hX:", longopts, NULL)) != -1) {
+    while ((flag = getopt_long(argc, argv, "ge:p:f:i:D1VJvsc:ub:t:n:k:l:P:Rw:B:M:N46S:L:ZO:F:A:T:C:dI:hX:", longopts, NULL)) != -1) {
         switch (flag) {
             case 'p':
 		portno = atoi(optarg);
@@ -1166,6 +1168,16 @@ iperf_parse_arguments(struct iperf_test *test, int argc, char **argv)
                     return -1;
                 }
 		iperf_set_test_role(test, 's');
+                break;
+            case 'g':
+                test->gro = 1;
+                break;
+            case 'e':
+		if (!optarg) {
+		    i_errno = IEBADFORMAT;
+		    return -1;
+		}
+                test->gso_size = atoi(optarg);
                 break;
             case 'c':
                 if (test->role == 's') {
@@ -2154,6 +2166,10 @@ send_parameters(struct iperf_test *test)
 	    cJSON_AddNumberToObject(j, "get_server_output", iperf_get_test_get_server_output(test));
 	if (test->udp_counters_64bit)
 	    cJSON_AddNumberToObject(j, "udp_counters_64bit", iperf_get_test_udp_counters_64bit(test));
+	if (test->gro)
+	    cJSON_AddNumberToObject(j, "udp_gro", test->gro);
+	if (test->gso_size)
+	    cJSON_AddNumberToObject(j, "udp_gso_size", test->gso_size);
 	if (test->repeating_payload)
 	    cJSON_AddNumberToObject(j, "repeating_payload", test->repeating_payload);
 	if (test->zerocopy)
@@ -2268,6 +2284,10 @@ get_parameters(struct iperf_test *test)
 	    iperf_set_test_get_server_output(test, 1);
 	if ((j_p = cJSON_GetObjectItem(j, "udp_counters_64bit")) != NULL)
 	    iperf_set_test_udp_counters_64bit(test, 1);
+	if ((j_p = cJSON_GetObjectItem(j, "udp_gro")) != NULL)
+	    test->gro = 1;
+	if ((j_p = cJSON_GetObjectItem(j, "udp_gso_size")) != NULL)
+	    test->gso_size = j_p->valueint;
 	if ((j_p = cJSON_GetObjectItem(j, "repeating_payload")) != NULL)
 	    test->repeating_payload = 1;
 	if ((j_p = cJSON_GetObjectItem(j, "zerocopy")) != NULL)
