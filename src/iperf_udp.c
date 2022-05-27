@@ -173,7 +173,7 @@ iperf_udp_recv(struct iperf_stream *sp)
 	}
 
 	if (sp->test->debug)
-	    fprintf(stderr, "pcount %" PRIu64 " packet_count %d\n", pcount, sp->packet_count);
+	    fprintf(stderr, "pcount %" PRIu64 " packet_count %d offset %d usec %d gso_size %d size %d\n", pcount, sp->packet_count, offset, usec, gso_size, size);
 
 	/*
 	 * Try to handle out of order packets.  The way we do this
@@ -271,6 +271,7 @@ iperf_udp_send(struct iperf_stream *sp)
     int       size = sp->settings->blksize;
     struct iperf_time before;
     int offset = 0;
+    uint32_t usec;
 
     while (offset < size) {
 
@@ -280,7 +281,7 @@ iperf_udp_send(struct iperf_stream *sp)
 
     if (sp->test->udp_counters_64bit) {
 
-	uint32_t  sec, usec;
+	uint32_t  sec;
 	uint64_t  pcount;
 
 	sec = htonl(before.secs);
@@ -294,7 +295,7 @@ iperf_udp_send(struct iperf_stream *sp)
     }
     else {
 
-	uint32_t  sec, usec, pcount;
+	uint32_t  sec, pcount;
 
 	sec = htonl(before.secs);
 	usec = htonl(before.usecs);
@@ -306,6 +307,8 @@ iperf_udp_send(struct iperf_stream *sp)
 
     }
 
+    if (sp->test->debug)
+        printf("pkt %d offset %d usec %d gso_size %d size %d\n", sp->packet_count, offset, usec, sp->settings->gso_size, size);
     if (sp->settings->gso_size)
         offset += sp->settings->gso_size;
     else
@@ -313,6 +316,7 @@ iperf_udp_send(struct iperf_stream *sp)
     }
 
     r = Nwrite(sp->socket, sp->buffer, size, Pudp);
+
 
     if (r < 0)
 	return r;
